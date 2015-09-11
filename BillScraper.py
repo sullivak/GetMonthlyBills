@@ -10,6 +10,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import PyPDF2
+import urllib2
 
 
 class BillScraper(object):
@@ -27,7 +28,7 @@ class BillScraper(object):
                 if is_first_line:
                     is_first_line = False
                     continue
-                self.pw_data[row[0]] = row[1:]
+                self.pw_data[row[0]] = row[1:]  # TODO: NOT IN PLAINTEXT!!
 
         # Set up new firefox profile to automatically download pdfs to specified dir (and disable internal displaying)
         fp = webdriver.FirefoxProfile()
@@ -219,6 +220,8 @@ class BillScraper(object):
                 num_to_try -= 1
                 time.sleep(5)
 
+        time.sleep(10)  # wait for download
+
         amount = None
         if len(pdfs) == 0:
             print "Never got it!"
@@ -258,18 +261,77 @@ class BillScraper(object):
         self.browser.get("https://www.directv.com/DTVAPP/login/login.jsp")
         self.login(directv_login)
 
-        return 0.00
+        amount = -1.00
+        # directv nicely randomizes which page you start on, fortunatly at the bottom
+        # My Bills & Transactions seems constant
+        try:
+            element = WebDriverWait(self.browser, self.page_wait_time).until(
+                EC.presence_of_element_located((By.LINK_TEXT, "My Bills & Transactions"))
+            )
+            element.click()
+        except common.exceptions.TimeoutException:
+            print "No bill history!"
+            return amount
 
+        try:
+            element = WebDriverWait(self.browser, self.page_wait_time).until(
+                EC.presence_of_element_located((By.LINK_TEXT, "View Statements"))
+            )
+            element.click()
+        except common.exceptions.TimeoutException:
+            print "No statements link!"
+            return amount
 
+        # can't find a way to directly get current/most recent, so go to table of all bills and get top
+        try:
+            bills_frame = WebDriverWait(self.browser, self.page_wait_time).until(
+                EC.presence_of_element_located((By.ID, "dtv_thirdparty_iframe"))
+            )
+            self.browser.switch_to_frame(bills_frame)
+        except common.exceptions.TimeoutException:
+            print "Can't find bills iframe!"
+            return amount
+
+        # lot's of waits as things load funny
+        bills_table = None
+        try:
+            bills_table = WebDriverWait(self.browser, self.page_wait_time).until(
+                EC.presence_of_element_located((By.ID, "ebilling_statements_table"))
+            )
+        except common.exceptions.TimeoutException:
+            print "Can't find bills table!"
+            return amount
+
+        trs = bills_table.find_elements_by_tag_name("tr")
+        first_row = trs[1].find_elements_by_tag_name("td")  # 1 is first (most recent) non-title row
+        js_link_element = first_row[0].find_element_by_tag_name("a")  # 0th column has js link
+        script_name = urllib2.unquote(js_link_element.get_attribute("href"))
+        self.browser.execute_script(script_name)
+
+        # script will open a new window, switch to that
+        handles = self.browser.window_handles
+        self.browser.switch_to_window(handles[1])  # 1-th window is new popup (not sure how robust this is)
+
+        # finally can get the pdf
+        self.browser.execute_script("javascript:document.billDetailDownloadPdf.submit()")
+
+        time.sleep(10)  # wait for download
+
+        print "current end point"
+        return amount
 def main():
     # Run specific parameters
     utes_base_dir = r"E:\UsersBulk\user\Dropbox\HomeUtilities"  # "/Users/sullivak/Dropbox/HomeUtilities"
     csv_file = r"E:\UsersBulk\user\local.csv"
     bs = BillScraper(utes_base_dir, csv_file)
 
-    # amt = bs.get_att_bill()
-    # amt = bs.get_cox_bill()
-    amt = bs.get_directv_bill()
+    att_amt = bs.get_att_bill()
+    cox_amt = bs.get_cox_bill()
+    dtv_amt = bs.get_directv_bill()
+
+    print att_amt
+    print cox_amt
+    print dtv_amt
 
 
 if __name__ == "__main__":
